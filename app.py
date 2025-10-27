@@ -26,213 +26,105 @@ def fetch_director(text):
 def collapse(L):
     return [i.replace(" ", "") for i in L]
 
-def create_user_movie_matrix():
-    """Create user-movie rating matrix from MovieLens ratings data"""
-    try:
-        # Read MovieLens ratings and movies data
-        ratings_df = pd.read_csv('ratings.csv')
-        movielens_movies_df = pd.read_csv('movies.csv')
-        tmdb_movies_df = pd.read_csv('tmdb_5000_movies.csv')
-        
-        # Clean up the titles by removing year and converting to lowercase
-        movielens_movies_df['clean_title'] = movielens_movies_df['title'].apply(
-            lambda x: ' '.join(x.split('(')[0].strip().lower().split()))
-        tmdb_movies_df['clean_title'] = tmdb_movies_df['title'].apply(
-            lambda x: ' '.join(x.lower().split()))
-        
-        # Create a mapping between MovieLens and TMDB movies
-        # Modified to handle duplicates by keeping only the first match
-        movie_mapping = {}
-        used_tmdb_indices = set()  # Keep track of already mapped TMDB indices
-        
-        for idx, row in movielens_movies_df.iterrows():
-            matching_tmdb = tmdb_movies_df[tmdb_movies_df['clean_title'] == row['clean_title']]
-            if not matching_tmdb.empty:
-                for tmdb_idx in matching_tmdb.index:
-                    if tmdb_idx not in used_tmdb_indices:
-                        movie_mapping[row['movieId']] = tmdb_idx
-                        used_tmdb_indices.add(tmdb_idx)
-                        break
-        
-        # Filter ratings to only include movies that exist in TMDB dataset
-        ratings_df = ratings_df[ratings_df['movieId'].isin(movie_mapping.keys())]
-        
-        # Map MovieLens movieIds to TMDB indices
-        ratings_df['tmdb_idx'] = ratings_df['movieId'].map(movie_mapping)
-        
-        # Drop any potential duplicates that might have slipped through
-        ratings_df = ratings_df.drop_duplicates(['userId', 'tmdb_idx'])
-        
-        # Create user-movie matrix
-        user_movie_ratings = ratings_df.pivot(
-            index='userId',
-            columns='tmdb_idx',
-            values='rating'
-        ).fillna(0)
-        
-        return user_movie_ratings, ratings_df, tmdb_movies_df
-        
-    except Exception as e:
-        raise Exception(f"Error creating user-movie matrix: {str(e)}")
-# Rest of the functions remain largely the same
-def calculate_similarity_matrix(user_movie_ratings):
-    """Calculate user similarity matrix using SVD"""
-    # Convert to numpy array and handle means
-    ratings_array = user_movie_ratings.to_numpy()
-    user_ratings_mean = np.mean(ratings_array, axis=1)
-    
-    # Broadcast the means to match the ratings array shape
-    ratings_diff = ratings_array - user_ratings_mean.reshape(-1, 1)
-    
-    # Perform SVD
-    U, sigma, Vt = svds(ratings_diff, k=min(50, min(ratings_diff.shape)-1))
-    
-    # Reconstruct the predictions
-    sigma = np.diag(sigma)
-    predicted_ratings = np.dot(np.dot(U, sigma), Vt) + user_ratings_mean.reshape(-1, 1)
-    
-    return predicted_ratings
+# Model creation functions removed - models should be pre-generated
 
-def create_hybrid_model():
-    """Process data and create both recommendation models"""
-    try:
-        # Content-based part
-        movies = pd.read_csv('tmdb_5000_movies.csv')
-        credits = pd.read_csv('tmdb_5000_credits.csv')
-        
-        # Merge dataframes
-        movies = movies.merge(credits, on='title')
-        
-        # Select relevant columns
-        movies = movies[['movie_id', 'title', 'overview', 'genres', 'keywords', 'cast', 'crew']]
-        
-        # Process content-based features
-        movies.dropna(inplace=True)
-        movies['genres'] = movies['genres'].apply(convert)
-        movies['keywords'] = movies['keywords'].apply(convert)
-        movies['cast'] = movies['cast'].apply(convert)
-        movies['cast'] = movies['cast'].apply(lambda x: x[:3])
-        movies['crew'] = movies['crew'].apply(fetch_director)
-        
-        movies['genres'] = movies['genres'].apply(collapse)
-        movies['keywords'] = movies['keywords'].apply(collapse)
-        movies['cast'] = movies['cast'].apply(collapse)
-        movies['crew'] = movies['crew'].apply(collapse)
-        
-        movies['overview'] = movies['overview'].apply(lambda x: x.split())
-        movies['tags'] = movies['overview'] + movies['genres'] + movies['keywords'] + movies['cast'] + movies['crew']
-        
-        new_df = movies.drop(columns=['overview', 'genres', 'keywords', 'cast', 'crew'])
-        new_df['tags'] = new_df['tags'].apply(lambda x: " ".join(x))
-        
-        # Create content-based similarity matrix
 
-        cv = CountVectorizer(max_features=5000, stop_words='english')
-        content_vectors = cv.fit_transform(new_df['tags']).toarray()
-        content_similarity = cosine_similarity(content_vectors)
-        
-        # Collaborative filtering part
-        user_movie_ratings, ratings_df, _ = create_user_movie_matrix()
-        
-        # Convert to numpy array before calculating predictions
-        collaborative_predictions = calculate_similarity_matrix(user_movie_ratings)
-        
-        # Save models
-        
-        if not os.path.exists('model'):
-            os.makedirs('model')
-        
-        # Save the processed data and matrices
-        pickle.dump(new_df, open('model/movie_list.pkl', 'wb'))
-        pickle.dump(content_similarity, open('model/content_similarity.pkl', 'wb'))
-        pickle.dump(collaborative_predictions, open('model/collaborative_predictions.pkl', 'wb'))
-        pickle.dump(user_movie_ratings, open('model/user_movie_ratings.pkl', 'wb'))
-        pickle.dump(ratings_df, open('model/ratings_df.pkl', 'wb'))
-        
-        return True, "Hybrid model created successfully!"
-    
-    except FileNotFoundError:
-        return False, "Error: Please ensure all required CSV files are in the same directory as the script."
-    except Exception as e:
-        return False, f"Error: {str(e)}"
 
-def get_hybrid_recommendations(movie, user_id=None, content_weight=0.7, collab_weight=0.3):
+def get_hybrid_recommendations(movie, user_id=None, content_weight=0.7, collab_weight=0.3, num_recommendations=5):
     """Get hybrid recommendations"""
     try:
-        # Load models
+        # Load models and data
         movies = pickle.load(open('model/movie_list.pkl', 'rb'))
         content_similarity = pickle.load(open('model/content_similarity.pkl', 'rb'))
         collaborative_predictions = pickle.load(open('model/collaborative_predictions.pkl', 'rb'))
         user_movie_ratings = pickle.load(open('model/user_movie_ratings.pkl', 'rb'))
-        ratings_df = pickle.load(open('model/ratings_df.pkl', 'rb'))
         
-        # Verify movie exists
-        if movie not in movies['title'].values:
+        # Load TMDB data for matching
+        movies_tmdb = pd.read_csv('tmdb_5000_movies.csv')
+        credits = pd.read_csv('tmdb_5000_credits.csv')
+        movies_tmdb = movies_tmdb.merge(credits, left_on='id', right_on='movie_id', how='left')
+        
+        # Verify movie exists in TMDB data
+        movie_matches = movies_tmdb[movies_tmdb['title_x'].str.contains(movie.split('(')[0].strip(), case=False, na=False)]
+        
+        if len(movie_matches) == 0:
             return f"Error: Movie '{movie}' not found in database."
         
-        # Get content-based scores
-        movie_index = movies[movies['title'] == movie].index[0]
-        content_scores = list(enumerate(content_similarity[movie_index]))
+        # Get the movie index
+        movie_idx = movie_matches.index[0]
         
-        # Get collaborative filtering scores
-        if user_id is not None:
-            # Check if user_id exists in the ratings
-            if user_id in user_movie_ratings.index:
-                user_idx = user_movie_ratings.index.get_loc(user_id)
-                if user_idx < len(collaborative_predictions):
-                    user_predictions = collaborative_predictions[user_idx]
-                    collab_scores = list(enumerate(user_predictions))
-                else:
-                    # Fallback to content-based only if user index is out of range
-                    collab_weight = 0
-                    content_weight = 1
-                    collab_scores = [(i, 0) for i in range(len(movies))]
+        # Get content-based similarities
+        content_scores = content_similarity[movie_idx]
+        
+        # Get collaborative scores if user_id provided
+        collab_scores = None
+        if user_id is not None and user_id in user_movie_ratings.index:
+            user_idx = user_movie_ratings.index.get_loc(user_id)
+            if user_idx < len(collaborative_predictions):
+                collab_scores = collaborative_predictions[user_idx]
+                collab_weight = 0.3
             else:
-                # Fallback to content-based only if user doesn't exist
                 collab_weight = 0
-                content_weight = 1
-                collab_scores = [(i, 0) for i in range(len(movies))]
+                content_weight = 1.0
         else:
-            # If no user_id provided, use only content-based
             collab_weight = 0
-            content_weight = 1
-            collab_scores = [(i, 0) for i in range(len(movies))]
+            content_weight = 1.0
         
-        # Combine scores
+        # Calculate hybrid scores
         hybrid_scores = []
-        for i in range(len(movies)):
-            content_score = content_scores[i][1]
-            collab_score = collab_scores[i][1] if i < len(collab_scores) else 0
-            collab_score_norm = (collab_score - 0) / (5 - 0)  # Normalize to 0-1
+        for idx in range(len(content_scores)):
+            content_score = content_scores[idx]
+            
+            # Get collaborative score if available
+            if collab_scores is not None:
+                # Map TMDB index to movieId
+                tmdb_movie_id = movies_tmdb.iloc[idx]['id']
+                if tmdb_movie_id in user_movie_ratings.columns:
+                    col_idx = user_movie_ratings.columns.get_loc(tmdb_movie_id)
+                    collab_score = collab_scores[col_idx] if col_idx < len(collab_scores) else 0
+                    collab_score_norm = (collab_score - 0) / (5 - 0)
+                else:
+                    collab_score = 0
+                    collab_score_norm = 0
+            else:
+                collab_score = 0
+                collab_score_norm = 0
+            
+            # Calculate hybrid score
             hybrid_score = (content_weight * content_score) + (collab_weight * collab_score_norm)
-            hybrid_scores.append((i, hybrid_score))
+            hybrid_scores.append((idx, hybrid_score, content_score, collab_score))
         
-        # Sort and get recommendations
+        # Sort by hybrid score (descending)
         hybrid_scores = sorted(hybrid_scores, key=lambda x: x[1], reverse=True)
         
+        # Get top recommendations
         recommendations = []
         count = 0
-        seen_titles = set()  # To prevent duplicate recommendations
+        seen_titles = set()
         
-        for i, score in hybrid_scores:
-            if count >= 5:
+        for idx, hybrid_score, content_score, collab_score in hybrid_scores:
+            if count >= num_recommendations:
                 break
-                
-            title = movies.iloc[i].title
-            if title != movie and title not in seen_titles:
+            
+            title = movies_tmdb.iloc[idx]['title_x']
+            year = movies_tmdb.iloc[idx]['release_date'][:4] if pd.notna(movies_tmdb.iloc[idx]['release_date']) else ''
+            full_title = f"{title} ({year})" if year else title
+            
+            # Skip the same movie and duplicates
+            if title != movie.split('(')[0].strip() and title not in seen_titles:
                 seen_titles.add(title)
                 recommendations.append({
-                    'title': title,
-                    'similarity': round(score * 100, 2),
-                    'content_score': round(content_scores[i][1] * 100, 2),
-                    'collab_score': round(collab_scores[i][1] * 20, 2) if collab_weight > 0 else 0
+                    'title': full_title,
+                    'similarity': round(hybrid_score * 100, 2),
+                    'content_score': round(content_score * 100, 2),
+                    'collab_score': round(collab_score * 20, 2) if collab_weight > 0 else 0
                 })
                 count += 1
         
         return recommendations
     
-    except FileNotFoundError:
-        return "Error: Model files not found. Please run the model creation first."
+    except FileNotFoundError as e:
+        return f"Error: Model files not found. Please run create_models.py first. ({str(e)})"
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -522,8 +414,8 @@ def main():
                 """, unsafe_allow_html=True)
                 
         except FileNotFoundError:
-            st.markdown("#### 🚀 Get Started")
-            st.info("Create the model first to see database statistics!")
+            st.markdown("#### ⚠️ Model Required")
+            st.warning("Model files not found! Please ensure model files are available in the 'model' directory.")
         
         # Footer
         st.markdown("---")
@@ -535,130 +427,104 @@ def main():
         
         st.markdown('</div>', unsafe_allow_html=True)
     
-    tab1, tab2 = st.tabs(["🚀 Create Model", "🎯 Get Matches"])
+    # Main content area for movie matches
+    st.markdown('<div class="content-card">', unsafe_allow_html=True)
+    st.markdown("### 🎯 Get Movie Matches")
+    st.markdown("Discover your perfect movie matches using our AI algorithm")
     
-    with tab1:
-        st.markdown('<div class="content-card">', unsafe_allow_html=True)
-        st.markdown("### 🔧 Create Hybrid Matchmaking Model")
-        st.markdown("Build the AI model that powers our movie matching engine")
+    try:
+        # Load TMDB movies (the ones that have similarity data)
+        movies_tmdb = pd.read_csv('tmdb_5000_movies.csv')
+        credits = pd.read_csv('tmdb_5000_credits.csv')
+        movies_tmdb = movies_tmdb.merge(credits, left_on='id', right_on='movie_id', how='left')
         
+        # Create movie list with year
+        movie_titles = []
+        for _, row in movies_tmdb.iterrows():
+            title = row['title_x']
+            year = row['release_date'][:4] if pd.notna(row['release_date']) else ''
+            full_title = f"{title} ({year})" if year else title
+            movie_titles.append(full_title)
+        
+        movie_titles = sorted(list(set(movie_titles)))  # Remove duplicates and sort
+        
+        # Create modern input layout
+        st.markdown("#### 🎬 Select Movie")
+        selected_movie = st.selectbox(
+            "Choose a movie you like:",
+            movie_titles,
+            help="Select a movie to find similar matches"
+        )
+        
+        # Weight adjustment section
+        st.markdown("#### ⚖️ Adjust Matchmaking Algorithm")
+        st.markdown("Fine-tune how our AI finds your matches:")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            content_weight = st.slider(
+                "🎭 Content-based Weight",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.7,
+                step=0.1,
+                help="Higher values focus on movie characteristics (genre, cast, etc.)"
+            )
+        with col2:
+            collab_weight = 1 - content_weight
+            st.slider(
+                "👥 Collaborative Weight",
+                min_value=0.0,
+                max_value=1.0,
+                value=collab_weight,
+                step=0.1,
+                disabled=True,
+                help="Automatically calculated as 1 - Content Weight"
+            )
+        
+        # Modern button with centered layout
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            if st.button("🚀 Create Hybrid Model", key="create_model"):
-                with st.spinner("🔄 Creating hybrid model... This may take a few minutes."):
-                    success, message = create_hybrid_model()
-                    if success:
-                        st.success(f"✅ {message}")
-                    else:
-                        st.error(f"❌ {message}")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with tab2:
-        st.markdown('<div class="content-card">', unsafe_allow_html=True)
-        st.markdown("### 🎯 Get Movie Matches")
-        st.markdown("Discover your perfect movie matches using our AI algorithm")
-        
-        try:
-            # Load necessary data
-            movies = pickle.load(open('model/movie_list.pkl', 'rb'))
-            user_ratings = pickle.load(open('model/user_movie_ratings.pkl', 'rb'))
-            
-            movie_list = movies['title'].values
-            valid_user_ids = user_ratings.index.tolist()
-            
-            # Create modern input layout
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("#### 🎬 Select Movie")
-                selected_movie = st.selectbox(
-                    "Choose a movie you like:",
-                    movie_list,
-                    help="Select a movie to find similar matches"
-                )
-            
-            with col2:
-                st.markdown("#### 👤 User Profile")
-                user_id = st.number_input(
-                    "Enter User ID (optional):",
-                    min_value=min(valid_user_ids) if valid_user_ids else None,
-                    max_value=max(valid_user_ids) if valid_user_ids else None,
-                    value=None,
-                    placeholder="Leave empty for content-based matching",
-                    help="Provide your User ID for personalized recommendations"
-                )
-                if user_id is not None and user_id not in valid_user_ids:
-                    st.warning(f"⚠️ User ID {user_id} not found in database. Matches will be content-based only.")
-            
-            # Weight adjustment section
-            st.markdown("#### ⚖️ Adjust Matchmaking Algorithm")
-            st.markdown("Fine-tune how our AI finds your matches:")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                content_weight = st.slider(
-                    "🎭 Content-based Weight",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.7,
-                    step=0.1,
-                    help="Higher values focus on movie characteristics (genre, cast, etc.)"
-                )
-            with col2:
-                collab_weight = 1 - content_weight
-                st.slider(
-                    "👥 Collaborative Weight",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=collab_weight,
-                    step=0.1,
-                    disabled=True,
-                    help="Automatically calculated as 1 - Content Weight"
-                )
-            
-            # Modern button with centered layout
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                if st.button('🔍 Find My Matches', key="find_matches"):
-                    with st.spinner("🎯 Finding your perfect matches..."):
-                        recommendations = get_hybrid_recommendations(
-                            selected_movie,
-                            user_id,
-                            content_weight,
-                            collab_weight
-                        )
+            if st.button('🔍 Find My Matches', key="find_matches"):
+                with st.spinner("🎯 Finding your perfect matches..."):
+                    recommendations = get_hybrid_recommendations(
+                        selected_movie,
+                        None,  # No user_id
+                        content_weight,
+                        collab_weight
+                    )
+                    
+                    if isinstance(recommendations, list):
+                        st.markdown("### 🌟 Your Matched Movies")
                         
-                        if isinstance(recommendations, list):
-                            st.markdown("### 🌟 Your Matched Movies")
-                            
-                            for i, rec in enumerate(recommendations, 1):
-                                st.markdown(f"""
-                                <div class="movie-card">
-                                    <div class="movie-title">#{i} {rec['title']}</div>
-                                    <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px;">
-                                        <span class="similarity-badge">Match: {rec['similarity']}%</span>
-                                        <span style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 0.3rem 0.8rem; border-radius: 20px; font-size: 0.85rem;">
-                                            Content: {rec['content_score']}%
-                                        </span>
-                                        <span style="background: linear-gradient(135deg, #f093fb, #f5576c); color: white; padding: 0.3rem 0.8rem; border-radius: 20px; font-size: 0.85rem;">
-                                            Collaborative: {rec['collab_score']}%
-                                        </span>
-                                    </div>
+                        for i, rec in enumerate(recommendations, 1):
+                            st.markdown(f"""
+                            <div class="movie-card">
+                                <div class="movie-title">#{i} {rec['title']}</div>
+                                <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px;">
+                                    <span class="similarity-badge">Match: {rec['similarity']}%</span>
+                                    <span style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 0.3rem 0.8rem; border-radius: 20px; font-size: 0.85rem;">
+                                        Content: {rec['content_score']}%
+                                    </span>
+                                    <span style="background: linear-gradient(135deg, #f093fb, #f5576c); color: white; padding: 0.3rem 0.8rem; border-radius: 20px; font-size: 0.85rem;">
+                                        Collaborative: {rec['collab_score']}%
+                                    </span>
                                 </div>
-                                """, unsafe_allow_html=True)
-                        else:
-                            st.error(f"❌ {recommendations}")
-            
-            st.markdown('</div>', unsafe_allow_html=True)
-                        
-        except FileNotFoundError:
-            st.markdown('<div class="content-card">', unsafe_allow_html=True)
-            st.error("❌ Please create the model first using the 'Create Model' tab.")
-            st.markdown('</div>', unsafe_allow_html=True)
-        except Exception as e:
-            st.markdown('<div class="content-card">', unsafe_allow_html=True)
-            st.error(f"❌ Error: {str(e)}")
-            st.markdown('</div>', unsafe_allow_html=True)
+                            </div>
+                            """, unsafe_allow_html=True)
+                    else:
+                        st.error(f"❌ {recommendations}")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+                    
+    except FileNotFoundError:
+        st.markdown('<div class="content-card">', unsafe_allow_html=True)
+        st.error("❌ Model files not found. Please ensure the model files exist in the 'model' directory.")
+        st.markdown('</div>', unsafe_allow_html=True)
+    except Exception as e:
+        st.markdown('<div class="content-card">', unsafe_allow_html=True)
+        st.error(f"❌ Error: {str(e)}")
+        st.markdown('</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
